@@ -17,12 +17,26 @@ from threading import Thread, Lock
 from queue import Queue
 import asyncio
 import signal
+from experimental.novelty_tracker import NoveltyTracker, PERFORMANCE_CONFIG as NOVELTY_CONFIG
 
 # Configuration
 ASSETS_DIR = os.path.expanduser("~/Desktop/llama-pile/assets")
 LOG_FILE = os.path.expanduser("~/Desktop/llama-pile/clipboard_log.txt")
 DATASET_FILE = os.path.expanduser("~/Desktop/llama-pile/clipboard_dataset.jsonl")
 SCREENSHOTS_DIR = os.path.expanduser("~/Screenshots")
+
+# Add Performance Configuration
+PERFORMANCE_CONFIG = {
+    "batch_size": 5,
+    "poll_interval": 0.5,
+    "max_queue_size": 100,
+    "min_content_length": 10,
+    "concurrent_agents": 2,
+    "history_size": 1000
+}
+
+# Update with novelty settings
+PERFORMANCE_CONFIG.update(NOVELTY_CONFIG)
 
 # AI Configuration
 AI_PROVIDER = "ollama"
@@ -96,9 +110,22 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 # Initialize AI client
 client = ollama.Client()
 
+# Initialize novelty tracker
+novelty_tracker = NoveltyTracker(PERFORMANCE_CONFIG["history_size"])
+
 def query_ollama(prompt):
-    response = client.generate(model=AI_MODEL, prompt=prompt)
-    return response['response']
+    """Modified to handle GenerateResponse object from ollama"""
+    try:
+        response = client.generate(model=AI_MODEL, prompt=prompt)
+        # Extract just the response text from the GenerateResponse object
+        response_text = response.response if hasattr(response, 'response') else str(response)
+        return {
+            'response': response_text,
+            'attention_scores': []  # Placeholder for attention scores
+        }
+    except Exception as e:
+        print(f"{Fore.RED}Error in query_ollama: {str(e)}{Style.RESET_ALL}")
+        return {'response': "Error generating response", 'attention_scores': []}
 
 # Initialize colorama
 colorama.init(autoreset=True)
@@ -125,15 +152,6 @@ def encode_image(image_path):
 def get_latest_screenshot():
     screenshots = sorted(Path(SCREENSHOTS_DIR).glob("*.png"), key=os.path.getmtime, reverse=True)
     return screenshots[0] if screenshots else None
-
-# Add performance configuration
-PERFORMANCE_CONFIG = {
-    "batch_size": 5,  # Process multiple clipboard items at once
-    "min_content_length": 10,  # Ignore very short clips
-    "poll_interval": 0.1,  # Check clipboard more frequently
-    "max_queue_size": 100,  # Maximum items in processing queue
-    "concurrent_agents": 2,  # Number of agents to run in parallel
-}
 
 # Add processing queues and locks
 content_queue = Queue(maxsize=PERFORMANCE_CONFIG["max_queue_size"])
@@ -242,7 +260,11 @@ def query_ai(content):
 
             # Add token limit to response
             response = query_ollama(prompt)
-            truncated_response = truncate_content(response, max_chars=512)
+            attention_matrix = response.get('attention_scores', [])
+            truncated_response = truncate_content(response['response'], max_chars=512)
+            
+            # Pass attention matrix to novelty tracker
+            novelty_tracker.add_response(final_response, attention_matrix)
             
             print(f"\n{agent['color']}{agent['name']}: {truncated_response}{Style.RESET_ALL}")
             agents_thoughts.append(truncated_response)

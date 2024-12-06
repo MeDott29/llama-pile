@@ -1,12 +1,34 @@
-from collections import Counter
+from collections import Counter, deque
 import numpy as np
+from datetime import datetime
+import os
+import json
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+from threading import Lock
+from colorama import Fore, Style
 
-# Add to PERFORMANCE_CONFIG
-PERFORMANCE_CONFIG.update({
+# Define base PERFORMANCE_CONFIG
+PERFORMANCE_CONFIG = {
     "novelty_weight": 0.3,  # How much to weight novelty (0-1)
     "history_size": 1000,   # How many past responses to track
-    "min_similarity": 0.2   # Minimum similarity threshold
-})
+    "min_similarity": 0.2,   # Minimum similarity threshold
+    "baseline_period": 100  # Number of responses to collect baseline metrics
+}
+
+@dataclass
+class BaselineMetrics:
+    timestamp: str
+    total_responses: int
+    unique_keys: int
+    unique_values: int
+    avg_response_length: float
+    key_diversity: float
+    value_diversity: float
+    mean_attention: Optional[float] = None
+    attention_std: Optional[float] = None
+    attention_max: Optional[float] = None
+    attention_min: Optional[float] = None
 
 class NoveltyTracker:
     def __init__(self, history_size=1000):
@@ -14,9 +36,21 @@ class NoveltyTracker:
         self.key_frequency = Counter()
         self.value_frequency = Counter()
         self.lock = Lock()
+        
+        # Add baseline tracking
+        self.baseline_metrics = {
+            'responses_processed': 0,
+            'unique_keys': set(),
+            'unique_values': set(),
+            'response_lengths': [],
+            'timestamp': datetime.now().isoformat(),
+            'attention_scores': [],
+            'attention_matrices': []
+        }
+        self.is_baseline_period = True
 
-    def add_response(self, response_dict):
-        """Track new response patterns"""
+    def add_response(self, response_dict, attention_matrix=None):
+        """Track new response patterns with baseline metrics including attention"""
         with self.lock:
             for agent_responses in response_dict.values():
                 if isinstance(agent_responses, dict) and 'response' in agent_responses:
@@ -30,8 +64,59 @@ class NoveltyTracker:
                         k, v = k.strip(), v.strip()
                         self.key_frequency[k] += 1
                         self.value_frequency[v] += 1
+                        
+                        # Track baseline metrics
+                        if self.is_baseline_period:
+                            self.baseline_metrics['unique_keys'].add(k)
+                            self.baseline_metrics['unique_values'].add(v)
+                            self.baseline_metrics['response_lengths'].append(len(pairs))
+                            self.baseline_metrics['responses_processed'] += 1
+                            
+                            # Track attention metrics during baseline period
+                            if attention_matrix:
+                                flat_scores = [score for row in attention_matrix for score in row]
+                                self.baseline_metrics['attention_scores'].extend(flat_scores)
+                                self.baseline_metrics['attention_matrices'].append(attention_matrix)
+                            
+                            # Check if baseline period is complete
+                            if self.baseline_metrics['responses_processed'] >= PERFORMANCE_CONFIG['baseline_period']:
+                                self._save_baseline_metrics()
+                                self.is_baseline_period = False
             
             self.response_history.append(response_dict)
+
+    def _save_baseline_metrics(self):
+        """Save baseline metrics including attention data"""
+        metrics = BaselineMetrics(
+            timestamp=self.baseline_metrics['timestamp'],
+            total_responses=self.baseline_metrics['responses_processed'],
+            unique_keys=len(self.baseline_metrics['unique_keys']),
+            unique_values=len(self.baseline_metrics['unique_values']),
+            avg_response_length=np.mean(self.baseline_metrics['response_lengths']),
+            key_diversity=len(self.baseline_metrics['unique_keys']) / self.baseline_metrics['responses_processed'],
+            value_diversity=len(self.baseline_metrics['unique_values']) / self.baseline_metrics['responses_processed'],
+            mean_attention=np.mean(self.baseline_metrics['attention_scores']) if self.baseline_metrics['attention_scores'] else None,
+            attention_std=np.std(self.baseline_metrics['attention_scores']) if self.baseline_metrics['attention_scores'] else None,
+            attention_max=np.max(self.baseline_metrics['attention_scores']) if self.baseline_metrics['attention_scores'] else None,
+            attention_min=np.min(self.baseline_metrics['attention_scores']) if self.baseline_metrics['attention_scores'] else None
+        )
+        
+        baseline_file = os.path.join(os.path.dirname(DATASET_FILE), 'novelty_baseline.json')
+        with open(baseline_file, 'w') as f:
+            json.dump(vars(metrics), f, indent=2)
+        
+        # Save detailed attention matrices separately
+        attention_file = os.path.join(os.path.dirname(DATASET_FILE), 'attention_baseline.json')
+        with open(attention_file, 'w') as f:
+            json.dump({
+                'timestamp': self.baseline_metrics['timestamp'],
+                'attention_matrices': self.baseline_metrics['attention_matrices']
+            }, f, indent=2)
+        
+        print(f"{Fore.CYAN}Baseline metrics collected and saved:{Style.RESET_ALL}")
+        for k, v in vars(metrics).items():
+            if v is not None:  # Only print non-None values
+                print(f"  {k}: {v}")
 
     def get_novelty_score(self, response_text):
         """Calculate novelty score for a potential response"""
