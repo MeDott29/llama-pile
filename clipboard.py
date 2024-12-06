@@ -10,17 +10,40 @@ from datetime import datetime
 from pathlib import Path
 from openai import OpenAI
 import anthropic
+import colorama
+from colorama import Fore, Style
+from typing import List, Dict
+import ollama
 
 # Configuration
-ASSETS_DIR = "/home/path/assets"
-LOG_FILE = "/home/path/clipboard_log.txt"
-DATASET_FILE = "/home/path/dataset.jsonl"
-SCREENSHOTS_DIR = os.path.expanduser("~/Pictures/Screenshots")
+ASSETS_DIR = os.path.expanduser("~/clipboard_assets")
+LOG_FILE = os.path.expanduser("~/clipboard_log.txt")
+DATASET_FILE = os.path.expanduser("~/clipboard_dataset.jsonl")
+SCREENSHOTS_DIR = os.path.expanduser("~/Screenshots")
 
 # AI Configuration
-AI_PROVIDER = "openai" 
-AI_MODEL = "gpt-4o-mini" 
+AI_PROVIDER = "ollama"
+AI_MODEL = "llama3.2:1b"
 SYSTEM_MESSAGE = "You are a poetic assistant, skilled in explaining complex programming concepts with creative flair."
+
+# Add new configuration
+AGENT_CONFIG = {
+    "curator": {
+        "name": "Curator",
+        "color": Fore.MAGENTA,
+        "personality": "An enthusiastic collector and organizer of digital artifacts, always excited to catalog new findings."
+    },
+    "analyst": {
+        "name": "Analyst",
+        "color": Fore.YELLOW,
+        "personality": "A thoughtful observer who connects dots between different clipboard items and finds patterns."
+    },
+    "synthesizer": {
+        "name": "Synthesizer",
+        "color": Fore.GREEN,
+        "personality": "A creative mind that combines insights from other agents to provide meaningful summaries."
+    }
+}
 
 # Ensure directories exist
 os.makedirs(ASSETS_DIR, exist_ok=True)
@@ -31,8 +54,16 @@ if AI_PROVIDER == "openai":
     client = OpenAI()
 elif AI_PROVIDER == "anthropic":
     client = anthropic.Anthropic()
+elif AI_PROVIDER == "ollama":
+    client = ollama.Client()
+    def query_ollama(prompt):
+        response = client.generate(model=AI_MODEL, prompt=prompt)
+        return response['response']
 else:
     raise ValueError(f"Unsupported AI provider: {AI_PROVIDER}")
+
+# Initialize colorama
+colorama.init(autoreset=True)
 
 def log_event(event_type, content):
     timestamp = datetime.now().isoformat()
@@ -71,49 +102,56 @@ def process_clipboard_content():
 
 def query_ai(content):
     try:
-        if AI_PROVIDER == "openai":
-            messages = [
-                {"role": "system", "content": SYSTEM_MESSAGE},
-                {"role": "user", "content": []}
-            ]
-            
+        # Create multi-agent prompts
+        agents_thoughts = []
+        for agent_id, agent in AGENT_CONFIG.items():
             if content["type"] == "text":
-                messages[1]["content"].append({"type": "text", "text": f"This is my most recently copied clipboard content: {content['content']}\nWhat do you think?"})
+                prompt = f"""As {agent['name']} with the following personality: {agent['personality']}
+                    Analyze this clipboard content: {content['content']}
+                    Previous agent thoughts: {agents_thoughts}
+                    
+                    Provide your unique perspective:"""
             elif content["type"] == "image":
                 base64_image = encode_image(content["content"])
-                messages[1]["content"].extend([
-                    {"type": "text", "text": "This is my most recently saved screenshot. What do you think?"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}", "detail": "high"}}
-                ])
-            
-            completion = client.chat.completions.create(
-                model=AI_MODEL,
-                messages=messages,
-                max_tokens=999
-            )
-            response = completion.choices[0].message.content
-        
-        elif AI_PROVIDER == "anthropic":
-            if content["type"] == "text":
-                prompt = f"This is my most recently copied clipboard content: {content['content']}\nWhat do you think?"
-            elif content["type"] == "image":
-                base64_image = encode_image(content["content"])
-                prompt = f"This is my most recently saved screenshot: [image: data:image/png;base64,{base64_image}]\nWhat do you think?"
-            
-            message = client.messages.create(
-                model=AI_MODEL,
-                max_tokens=999,
-                messages=[
-                    {"role": "system", "content": SYSTEM_MESSAGE},
+                prompt = f"""As {agent['name']} with the following personality: {agent['personality']}
+                    Analyze this screenshot: [image data]
+                    Previous agent thoughts: {agents_thoughts}
+                    
+                    Provide your unique perspective:"""
+
+            # Get response based on AI provider
+            if AI_PROVIDER == "ollama":
+                response = query_ollama(prompt)
+            elif AI_PROVIDER == "openai":
+                messages = [
+                    {"role": "system", "content": agent['personality']},
                     {"role": "user", "content": prompt}
                 ]
-            )
-            response = message.content
-        
-        print("AI says:", response)
-        return response
+                completion = client.chat.completions.create(
+                    model=AI_MODEL,
+                    messages=messages,
+                    max_tokens=333
+                )
+                response = completion.choices[0].message.content
+            elif AI_PROVIDER == "anthropic":
+                message = client.messages.create(
+                    model=AI_MODEL,
+                    max_tokens=333,
+                    messages=[
+                        {"role": "system", "content": agent['personality']},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                response = message.content
+
+            print(f"{agent['color']}{agent['name']}: {response}{Style.RESET_ALL}")
+            agents_thoughts.append(response)
+
+        # Return combined insights
+        return "\n".join(agents_thoughts)
+
     except Exception as e:
-        print("Error querying AI:", str(e))
+        print(f"{Fore.RED}Error querying AI: {str(e)}{Style.RESET_ALL}")
         return None
 
 def save_to_dataset(content, ai_response):
