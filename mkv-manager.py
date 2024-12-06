@@ -42,13 +42,13 @@ class SRTGenerator:
     def generate_timestamp(self, start: timedelta) -> tuple[str, str]:
         """Generate SRT timestamp format"""
         end = start + timedelta(seconds=random.uniform(2, 5))
-        return (
-            f"{str(start).split('.')[0]},000",
-            f"{str(end).split('.')[0]},000"
-        )
+        # Format: 00:00:00,000 --> 00:00:02,000
+        start_str = f"{str(start).split('.')[0].zfill(8)},000"
+        end_str = f"{str(end).split('.')[0].zfill(8)},000"
+        return (start_str, end_str)
     
     def create_srt(self, duration: float, output_path: Path):
-        """Create random SRT file with reasonable timing"""
+        """Create SRT file with Twitter/X compatible format"""
         current_time = timedelta()
         end_time = timedelta(seconds=float(duration))
         
@@ -56,11 +56,19 @@ class SRTGenerator:
             counter = 1
             while current_time < end_time:
                 start_stamp, end_stamp = self.generate_timestamp(current_time)
+                
+                # Proper SRT format:
+                # 1. Subtitle number
+                # 2. Timestamp range (00:00:00,000 --> 00:00:02,000)
+                # 3. Text
+                # 4. Blank line
                 f.write(f"{counter}\n")
                 f.write(f"{start_stamp} --> {end_stamp}\n")
-                f.write(f"{random.choice(self.phrases)}\n\n")
+                f.write(f"{random.choice(self.phrases)}\n")
+                f.write("\n")  # Important blank line between entries
                 
-                current_time += timedelta(seconds=random.uniform(5, 10))
+                # Move forward by 2-5 seconds
+                current_time += timedelta(seconds=random.uniform(2, 5))
                 counter += 1
 
 class MKVManager:
