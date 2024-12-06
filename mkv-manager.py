@@ -151,7 +151,7 @@ class MKVManager:
                        quality: str = 'high', compress: bool = False):
         """Transform MKV to different format with Twitter-compatible settings"""
         output_path = self.output_dir / f"{input_path.stem}.{output_format}"
-        srt_path = self.output_dir / f"{input_path.stem}.srt"
+        srt_path = self.output_dir / f"{input_path.stem}.SRT"
         
         # Twitter video requirements:
         # - Maximum resolution: 1920x1200
